@@ -45,12 +45,34 @@ def insert_flat_data(ws, filename, vehicle_info, engines):
     make = vehicle_info.get("make")
     model = vehicle_info.get("model")
 
+    # Skip files with no engine data.
+    if not engines:
+        return
+
     for engine_name, engine_data in engines.items():
         capacity = engine_data.get("oil_capacity", {})
         with_filter = capacity.get("with_filter", {}) or {}
         without_filter = capacity.get("without_filter", {}) or {}
 
         oil_recs = engine_data.get("oil_recommendations", [])
+
+        # If an engine exists but has no recommendations, still write one row.
+        if not oil_recs:
+            ws.append([
+                filename,
+                year,
+                make,
+                model,
+                engine_name,
+                "N/A",
+                "N/A",
+                "N/A",
+                with_filter.get("quarts"),
+                with_filter.get("liters"),
+                without_filter.get("quarts"),
+                without_filter.get("liters")
+            ])
+            continue
 
         for rec in oil_recs:
             oil_type = rec.get("oil_type")
