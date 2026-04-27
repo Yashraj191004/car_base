@@ -101,6 +101,25 @@ CAPACITY_REFILL_CONTEXT = [
     "consumption may be",
 ]
 
+NON_CAPACITY_OIL_QUANTITY_CONTEXT = [
+    "do not use more than",
+    "not use more than",
+    "between scheduled service intervals",
+    "between service intervals",
+    "alternative engine oil",
+    "raise the indicated level",
+    "minimum to maximum",
+    "required to raise",
+    "oil level",
+    "dipstick",
+    "adding engine oil",
+    "add oil",
+    "top off",
+    "top-up",
+    "top up",
+    "oil consumption",
+]
+
 ENGINE_OIL_STOP_TERMS = [
     "cooling system", "coolant", "fuel tank", "transmission",
     "transaxle", "differential", "power steering", "brake fluid",
@@ -416,6 +435,50 @@ def is_real_capacity_match(text, match):
         "capacity", "capacities", "with filter", "fluid", "cooling system",
         "fuel tank", "quarts", "qts", "qt"
     ])
+
+
+def match_sentence_context(text, match, radius=180):
+    """Return the sentence-like context around a numeric quantity match."""
+    if not text or not match:
+        return ""
+
+    raw = str(text)
+    start_candidates = [
+        raw.rfind(delimiter, 0, match.start())
+        for delimiter in (".", ";", "!", "?")
+    ]
+    start = max(start_candidates)
+    if start == -1:
+        start = max(0, match.start() - radius)
+    else:
+        start += 1
+
+    end_candidates = [
+        raw.find(delimiter, match.end())
+        for delimiter in (".", ";", "!", "?")
+    ]
+    end_candidates = [idx for idx in end_candidates if idx != -1]
+    end = min(end_candidates) + 1 if end_candidates else min(len(raw), match.end() + radius)
+
+    return raw[start:end].lower()
+
+
+def is_non_capacity_oil_quantity_match(text, match):
+    """Reject oil-service quantities that are not total engine-oil capacities."""
+    local = match_sentence_context(text, match)
+    if not local:
+        return False
+
+    if any(term in local for term in NON_CAPACITY_OIL_QUANTITY_CONTEXT):
+        return True
+    if re.search(r"quantity\s+of\s+engine\s+oil.{0,80}raise.{0,80}dipstick", local, re.I):
+        return True
+    if re.search(r"do\s+not\s+use\s+more\s+than.{0,80}engine\s+oil", local, re.I):
+        return True
+    if re.search(r"between\s+(?:scheduled\s+)?service\s+intervals", local, re.I):
+        return True
+
+    return False
 
 
 def overlaps_real_capacity_match(text, engine_match, capacity_matches=None):
@@ -1778,6 +1841,8 @@ def score_capacity_candidate(text, target_field=None, engine_key=None):
         score -= 8
     if any(term in text_lower for term in CAPACITY_REFILL_CONTEXT):
         score -= 14
+    if any(term in text_lower for term in NON_CAPACITY_OIL_QUANTITY_CONTEXT):
+        score -= 18
     if "oil filter" in text_lower and "engine oil" not in text_lower and "with filter" not in text_lower:
         score -= 5
     if "for specific engine oil capacities" in text_lower:
@@ -3670,6 +3735,7 @@ def extract_engine_oil_capacity_sections(doc):
         return [
             m for m in re.finditer(CAPACITY_PATTERN, text, re.I)
             if is_real_capacity_match(text, m)
+            and not is_non_capacity_oil_quantity_match(text, m)
         ]
 
     def engine_key_from_line(text):
@@ -3902,6 +3968,12 @@ def extract_engine_oil_capacity_sections(doc):
         if "engine oil" not in line_lower or "life" in line_lower or "pressure" in line_lower:
             continue
         if "dipstick" in line_lower or "adding engine oil" in line_lower:
+            continue
+        if (
+            re.search(OIL_PATTERN, line_lower, re.I)
+            and "capacity" not in line_lower
+            and not any(label in line_lower for label in WITH_FILTER_LABELS + WITHOUT_FILTER_LABELS)
+        ):
             continue
         if any(term in line_lower for term in ["oil filter part", "engine oil filler cap"]):
             continue
@@ -4166,7 +4238,7 @@ def extract_engine_oil_capacity_sections(doc):
             continue
 
         target_engine = current_engine or "unknown_engine"
-        evidence_text = capacity_text or line_clean
+        evidence_text = " ".join(part for part in [line_clean, capacity_text] if part)
         candidates.append({
             "engine": target_engine,
             "field": target_field,
