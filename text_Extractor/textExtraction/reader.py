@@ -17,6 +17,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 CREDS_PATH = "credentials.json"
 OUTPUT_FILE = "structured_results.json"
 REFERENCE_FILE = "vehicle_reference.json"
+LOCAL_MANUALS_FOLDER = "Manuals"
 
 
 # Core text patterns. These stay generic: they describe syntax commonly found in
@@ -1126,6 +1127,48 @@ def get_all_pdfs(service, folder_id):
                 pdfs.append(item)
     
     return pdfs
+
+
+def get_local_pdfs(folder_path=LOCAL_MANUALS_FOLDER):
+    """Recursively collect PDF files under the local Manuals folder."""
+    manuals_path = Path(folder_path)
+    if not manuals_path.exists():
+        print(f"Local manuals folder not found: {manuals_path.resolve()}")
+        return []
+
+    pdfs = []
+    for pdf_path in sorted(manuals_path.rglob("*.pdf")):
+        pdfs.append({
+            "name": pdf_path.name,
+            "path": pdf_path
+        })
+
+    return pdfs
+
+
+def load_local_pdf(file_path):
+    """Load a local PDF into an in-memory byte buffer."""
+    buffer = io.BytesIO(Path(file_path).read_bytes())
+    buffer.seek(0)
+    return buffer
+
+
+def choose_pdf_source():
+    """Ask which PDF source should feed the extraction run."""
+    print("\nChoose PDF extraction source:")
+    print("1. Google Drive")
+    print(f"2. Local {LOCAL_MANUALS_FOLDER} folder")
+
+    choice = input("Enter choice (1 or 2): ").strip()
+
+    match choice:
+        case "1":
+            return "drive"
+        case "2":
+            return "local"
+        case _:
+            print("Invalid choice. Using Google Drive.")
+            return "drive"
 
 
 def analyze_pdf_type(doc):
@@ -5358,11 +5401,25 @@ def select_best_engine(engine_caps, all_engines):
     return None, None
 
 def extract_all():
-    """Run the full Drive-to-JSON extraction pipeline."""
+    """Run the full PDF-to-JSON extraction pipeline."""
     start_time = time.time()
-    service = get_drive_service()
-    pdfs = get_all_pdfs(service, FOLDER_ID)
-    print(f"\nTotal PDFs found: {len(pdfs)}\n")
+    source = choose_pdf_source()
+    service = None
+
+    match source:
+        case "drive":
+            service = get_drive_service()
+            pdfs = get_all_pdfs(service, FOLDER_ID)
+            source_label = "Google Drive"
+        case "local":
+            pdfs = get_local_pdfs()
+            source_label = f"local {LOCAL_MANUALS_FOLDER} folder"
+        case _:
+            service = get_drive_service()
+            pdfs = get_all_pdfs(service, FOLDER_ID)
+            source_label = "Google Drive"
+
+    print(f"\nTotal PDFs found in {source_label}: {len(pdfs)}\n")
     results = {}
 
     # Each PDF is processed independently so partial failures do not block
@@ -5372,7 +5429,12 @@ def extract_all():
         print("Processing:", filename)
 
         year, make, model = parse_filename(filename)
-        pdf_stream = download_pdf(service, file["id"])
+
+        match source:
+            case "local":
+                pdf_stream = load_local_pdf(file["path"])
+            case _:
+                pdf_stream = download_pdf(service, file["id"])
 
         with fitz.open(stream=pdf_stream.read(), filetype="pdf") as doc:
             extraction_type, avg_chars = analyze_pdf_type(doc)
