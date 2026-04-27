@@ -131,6 +131,7 @@ The extractor writes `structured_results.json` as:
 2. Vehicle metadata is parsed from filename first, then repaired using document text and optional references.
 3. Engine detection prioritizes structured/spec tables, then prose fallback.
 4. Capacity extraction uses multiple targeted strategies before generic fallback scans.
+    - Oil-service/top-up quantities are rejected dynamically when context says they are not total capacities.
 5. Oil recommendations are scored from language strength (best/preferred/recommended/may be used) and context.
 6. Temperature ranges are normalized and attached per oil recommendation when possible.
 7. Final records are validated and normalized before JSON export.
@@ -196,6 +197,7 @@ This section follows the actual control flow in `reader.py` from `extract_all()`
 - Merges model-named row tables and columnar model-capacity tables.
 - Computes shared fallback capacity candidates.
 - Uses guardrails to reject noisy tiny values or non-engine fluid rows.
+- Rejects service/top-up quantities such as dipstick raise amounts, "do not use more than" limits, and between-service-interval oil amounts.
 - Keeps only capacities aligned with detected engines when possible.
 
 8. Engine list reconciliation
@@ -263,7 +265,7 @@ This appendix describes the major functions with:
 - Output: return value shape
 - Why it exists: role in the pipeline
 
-### Complete Inventory (All 118 Functions)
+### Complete Inventory (All 120 Functions)
 
 The list below is the full 1-to-1 function inventory from `reader.py` with direct links to each definition.
 
@@ -282,6 +284,8 @@ The list below is the full 1-to-1 function inventory from `reader.py` with direc
 - [is_parenthesized_capacity_conversion]
 - [is_capacity_or_fluid_row]
 - [is_real_capacity_match]
+- [match_sentence_context]
+- [is_non_capacity_oil_quantity_match]
 - [overlaps_real_capacity_match]
 - [get_temperature_with_fallback]
 - [has_non_engine_oil_context]
@@ -633,10 +637,20 @@ The list below is the full 1-to-1 function inventory from `reader.py` with direc
     - Output: fallback capacity dict or None
     - Why it exists: final capacity fallback when engine-specific mapping is unavailable.
 
+- `match_sentence_context(text, match, radius=180)`
+    - Inputs: source text, regex match, optional context radius
+    - Output: sentence-like local context string
+    - Why it exists: gives capacity filters the nearest statement around a numeric quantity.
+
+- `is_non_capacity_oil_quantity_match(text, match)`
+    - Inputs: source text and capacity regex match
+    - Output: boolean
+    - Why it exists: rejects oil-service/top-up quantities that are not total engine-oil capacities.
+
 - `score_capacity_candidate(text, target_field=None, engine_key=None)`
     - Inputs: evidence text, field hint, engine key
     - Output: numeric score
-    - Why it exists: ranks candidate capacities by context confidence.
+    - Why it exists: ranks candidate capacities by context confidence and penalizes service/top-up quantity language.
 
 - `select_best_capacity_candidates(candidates)`
     - Inputs: candidate list
@@ -778,4 +792,5 @@ The list below is the full 1-to-1 function inventory from `reader.py` with direc
 
 - The extractor intentionally filters non-engine fluid sections (coolant, transmission, brake fluid, etc.) to reduce false positives.
 - Capacity values outside normal engine-oil bounds are rejected.
+- Oil quantities tied to dipstick level changes, top-ups, alternative-oil limits, or service intervals are treated as non-capacity evidence.
 - Some manuals contain mixed formatting; OCR and fallback logic are designed to handle those cases conservatively.
