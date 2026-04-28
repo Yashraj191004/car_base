@@ -794,3 +794,202 @@ The list below is the full 1-to-1 function inventory from `reader.py` with direc
 - Capacity values outside normal engine-oil bounds are rejected.
 - Oil quantities tied to dipstick level changes, top-ups, alternative-oil limits, or service intervals are treated as non-capacity evidence.
 - Some manuals contain mixed formatting; OCR and fallback logic are designed to handle those cases conservatively.
+
+# Documentation | Car Database
+
+## Timeline
+
+- Considered whether to use web scraping or purchase proprietary car databases.
+- Checked whether web scraping was technically feasible.
+- Scraped Toyota's website and retrieved a limited number of manuals.
+- Tested whether useful data could be extracted from the downloaded manuals.
+- In parallel, evaluated 3-4 car databases at different price points.
+- Found that the available databases also had many inconsistencies.
+- Decided to use web scraping and manual reading as the main approach.
+- Finalized the tech stack and libraries.
+- Found that many websites had weak or missing web scraping protocols, then searched for a website with a linear structure and no scraping security.
+- Found a suitable website and scraped approximately 30 GB of car manual PDF data.
+- Worked on text extraction in parallel.
+
+## File Structure
+
+```text
+Car_base/                         # Project folder
+|--- manualExtractor/             # Web/manual scraper
+|    |--- main.py                  # Executable Python file
+|
+|--- textExtractor/               # Information retriever
+|    |--- reader.py                # Retrieves information from manuals
+|    |--- migrate_to_sqlite.py     # Saves extracted data to the database
+|
+|--- manuals/
+     |--- manual.pdf              # Folder containing all manuals
+```
+
+## Methods Tried That Did Not Work
+
+1. Scraping directly from car manufacturers' websites.
+   - Blocked by bot detection.
+
+2. Using LLM APIs to get car manual data.
+   - Accuracy was too low, around 35%.
+
+## Challenges Faced
+
+1. Weak performance due to website rate limiting.
+   - Tackled by using concurrent web browsers to send requests.
+
+2. Moving and uploading large datasets.
+   - Large files wasted too much local computer storage.
+   - Moved the dataset to remote storage.
+   - Switched from regular GitHub push/pull to Git LFS.
+
+3. No single website provided all manuals.
+   - Scraped manuals from multiple aggregator websites.
+
+## Logic Under the Hood
+
+### 1. Manual Extractor
+
+#### 1.1 High-Level Logic
+
+1. Selects a folder to store all downloads.
+2. Opens multiple browsers.
+3. Goes to the page where the car make is selected.
+4. Copies the full list of car makes and stores it.
+5. Goes to the model page for each make.
+6. Copies the full model list and repeats the same process for year pages.
+7. Predicts the URL where the manual may be present using a format like:
+
+   ```text
+   www.website.com/make/info/manuals/model/year
+   ```
+
+8. Looks for files with a `.pdf` extension and stores them in a list.
+9. Waits until the scraping process is complete.
+10. Goes through the list and downloads each manual one by one.
+11. Sends the downloaded folder to the text extractor.
+
+> **Note:** The process is modularized to prevent the full application from crashing. Each service executes independently, so a failure in one part does not crash the entire program.
+
+#### 1.2 Technical Logic
+
+```text
+INITIALIZE DOWNLOAD_DIR
+
+FUNCTION process_make(make, browser, session, pdf_tasks, semaphore):
+    ACQUIRE semaphore (limit concurrency)
+    CREATE new browser page
+
+    TRY:
+        GET make_name
+        WAIT (rate limiting)
+
+        # Step 1: Get all models for this make
+        NAVIGATE to make's model page
+        EXTRACT list of models:
+            FOR each anchor tag:
+                PARSE model_slug and model_name
+                REMOVE duplicates
+
+        PRINT number of models
+
+        # Step 2: Process each model
+        FOR each model in models:
+            TRY:
+                BUILD manual_page_url
+                NAVIGATE to manual_page_url
+                WAIT
+
+                # Step 3: Get year links
+                EXTRACT year_links from page
+
+                IF no year_links:
+                    USE current page as fallback
+
+                # Step 4: Process each year
+                FOR each year_url in year_links:
+                    TRY:
+                        WAIT (rate limiting)
+                        NAVIGATE to year_url
+                        EXTRACT year from URL
+
+                        # Step 5: Get PDF links
+                        EXTRACT all PDF links on page
+
+                        FOR each pdf_url:
+                            GENERATE unique filename:
+                                include make, model, year
+                            ADD (pdf_url, filename) to pdf_tasks
+
+                    CATCH error:
+                        PRINT error for this year
+                        CONTINUE
+
+            CATCH error:
+                PRINT error for this model
+                CONTINUE
+
+    CATCH error:
+        PRINT error for this make
+
+    FINALLY:
+        CLOSE page
+        RELEASE semaphore
+
+
+FUNCTION main():
+    CREATE HTTP session
+    LAUNCH browser
+
+    # Step 1: Get all makes
+    OPEN new page
+    NAVIGATE to "pickmake" page
+    WAIT for make elements
+
+    EXTRACT makes:
+        FOR each link:
+            GET make_slug and name
+            REMOVE duplicates
+
+    CLOSE page
+    PRINT number of makes
+
+    # Step 2: Process makes concurrently
+    INITIALIZE empty pdf_tasks list
+    CREATE semaphore (limit = 2)
+
+    CREATE async tasks:
+        FOR first N makes:
+            CALL process_make()
+
+    RUN all tasks concurrently
+
+    # Step 3: Download PDFs
+    PRINT total number of PDFs
+
+    FOR each (pdf_url, filename) in pdf_tasks:
+        CALL download_pdf()
+
+    CLOSE browser
+
+
+FUNCTION download_pdf(url, filename, session):
+    CREATE filepath
+
+    IF file already exists:
+        SKIP download
+        RETURN
+
+    SEND HTTP GET request
+
+    IF response is successful:
+        WRITE content to file
+        PRINT success
+    ELSE:
+        PRINT error
+
+
+PROGRAM ENTRY:
+    RUN main() using asyncio
+```
